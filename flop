@@ -1,0 +1,113 @@
+#!/usr/bin/env python
+#
+# floppy - Autounattended floppy disk image creation
+#
+# Creates a floppy disk image (.img) file for use with VMware.
+#
+# This image will contain an autounattended XML file which 
+# Windows will use to perofmr an automated installation.
+#
+# Author: Chris Bradley <hackbyday@gmail.com>
+#
+
+from __future__ import print_function
+import os
+import sys
+import argparse
+import re
+from shutil import copy
+import subprocess
+from time import sleep
+from platform import system
+
+# sanity check we are on a mac
+if system() != 'Darwin':
+    print('[!] Operating system is not OSX, existing.')
+    sys.exit(1)
+
+# parse CLI arguments
+parser = argparse.ArgumentParser()
+parser.add_argument('-o', '--outfile', action='store', required=True)
+parser.add_argument('-x', '--xmlfile', action='store', required=True)
+args = parser.parse_args()
+
+# sanity check an output file was specified
+if not (args.outfile and args.xmlfile):
+    parser.print_usage()
+    sys.exit(1)
+
+# set some variables
+outfile = args.outfile
+xmlfile = args.xmlfile
+
+# sanity check files do and dont exist
+if not os.path.isfile(xmlfile):
+    print("[!] Autoattened XML file specified does not exist, exiting.")
+    sys.exit(1)
+
+if os.path.isfile(outfile):
+    print("[!] Output file specified already exists, existing.")
+    sys.exit(1)
+
+# create an empty floppy disk image
+print("[*] Creating floppy disk (.flp) image file")
+
+proc = subprocess.Popen('dd if=/dev/zero of={} bs=1024 count=1440'.format(outfile), 
+    shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+(out, err) = proc.communicate()
+
+# attach disk image
+print("[*] Mounting raw disk image")
+
+proc = subprocess.Popen('hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount {}'.format(outfile), 
+    shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+(out, err) = proc.communicate()
+
+m = re.search('(/dev/disk\d+)', out)
+if m:
+    disk = m.group()
+
+    print('[*] Image successfully mounted as {}'.format(disk))
+
+    # format the disk image
+    print('[*] Formatting disk image as MS-DOS')
+    proc = subprocess.Popen('/sbin/newfs_msdos -v UNATTENDED {}'.format(disk),
+        shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    # sync disk and give the system a second to catch up
+    proc = subprocess.Popen('sync', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    sleep(1)
+
+    # unmounting disk image
+    print('[*] Unmounting disk image')
+    proc = subprocess.Popen('hdiutil detach {}'.format(disk),
+        shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    # remount formatted image
+    print('[*] Mounting formatted disk image')
+    proc = subprocess.Popen('hdiutil attach -imagekey diskimage-class=CRawDiskImage {}'.format(outfile), 
+        shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (out, err) = proc.communicate()
+
+    v = re.search('(/Volumes/\S+)', out)
+    if v:
+        volume = v.group()
+
+        # copy xml file to disk
+        print('[*] Copying Autounattend.xml to disk image')
+        copy(xmlfile, volume + '/Autounattend.xml')
+
+        # final unmount
+        print('[*] Unmounting disk image')
+        proc = subprocess.Popen('hdiutil detach {}'.format(disk),
+            shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        print('[*] Disk image {} created successfully.'.format(outfile))
+    
+    else:
+        print('[!] Disk image did not appear to successfully mount, exiting')
+        sys.exit(1)
+
+else:
+    print('[!] Disk image did not appear to successfully mount, exiting')
+    sys.exit(1)
